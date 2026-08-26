@@ -42,9 +42,9 @@ def generate_blog_post(topic_title):
 
 바로 복사해서 블로그에 붙여넣을 수 있도록 깔끔한 마크다운 형식으로 작성해라.
 """
-    # 호환되는 최신 모델명 적용 (gemini-2.0-flash)
+    # 구글 API 최신 정식 모델(gemini-3.6-flash) 적용
     response = client.models.generate_content(
-        model='gemini-2.0-flash',
+        model='gemini-3.6-flash',
         contents=prompt
     )
     return response.text
