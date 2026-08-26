@@ -13,11 +13,10 @@ if not all([GEMINI_API_KEY, TELEGRAM_TOKEN, CHAT_ID]):
 # 2. Gemini API 설정 및 원고 생성
 genai.configure(api_key=GEMINI_API_KEY)
 
-# 최신 모델 우선순위 및 백업 모델 목록
+# 최신 활성 모델 목록 (gemini-3.6-flash 최우선)
 models_to_try = [
-    "gemini-2.5-flash",
-    "gemini-2.0-flash",
-    "gemini-1.5-flash"
+    "gemini-3.6-flash",
+    "gemini-2.5-flash"
 ]
 
 prompt = """
@@ -40,9 +39,9 @@ for model_name in models_to_try:
         print(f"[{model_name}] 서버 응답 대기/실패 ({e}). 다음 백업 모델로 재시도합니다.")
 
 if not draft_text:
-        raise RuntimeError("모든 Gemini 모델 호출에 실패했습니다.")
+    raise RuntimeError("모든 Gemini 모델 호출에 실패했습니다.")
 
-# 3. 텔레그램 전송 (parse_mode를 제외하여 특수문자 전송 에러 방지)
+# 3. 텔레그램 전송
 url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 payload = {
     "chat_id": CHAT_ID,
@@ -50,8 +49,6 @@ payload = {
 }
 
 telegram_response = requests.post(url, json=payload)
-
-# 텔레그램 전송 실패 시(400, 401 등) 깃허브 로그에 에러를 강제로 출력
 telegram_response.raise_for_status()
 
 print("블로그 초안 텔레그램 전송 완료!")
