@@ -4,26 +4,28 @@ import xml.etree.ElementTree as ET
 import ssl
 import os
 import json
+import re
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
-# -------------------------------------------------------------------
-# [1] 확장된 목동 영유 키워드 리스트 (총 18개 타겟 키워드)
-# -------------------------------------------------------------------
-TARGET_KEYWORDS = [
-    # 주요 개별 영유 타겟
-    "목동 폴리 설명회", "목동 폴리 입학",
-    "목동 월넛 모집", "목동 월넛 설명회",
-    "목동 엘란 모집", "목동 라이즈 설명회",
-    "목동 프랜시스파커 모집", "목동 SLP 설명회",
-    "목동 PSA 설명회", "목동 잉글리쉬러닝베이",
-    "목동 ECC 모집", "목동 알티오라",
-    
-    # 통합 및 공통 키워드
-    "목동 영어유치원 설명회", "목동 영어유치원 모집",
-    "목동 영유 원아모집", "목동 영유 설명회",
-    "목동 영유 입학", "목동 영유 레벨테스트"
+# [업그레이드 1] 영문/한글 혼용 및 유의어 매칭 사전 (K-Skill 기반 필터링)
+KEYWORD_MAP = {
+    "폴리": ["폴리", "poly", "엠폴리", "mpoly"],
+    "라이즈": ["라이즈", "rise"],
+    "프랜시스파커": ["프랜시스파커", "프란시스파커", "francis parker"],
+    "SLP": ["slp", "에스엘피"],
+    "월넛": ["월넛", "walnut"],
+    "엘란": ["엘란", "elan"],
+    "PSA": ["psa", "피에스에이"],
+    "ECC": ["ecc", "이씨씨"],
+    "영유": ["영유", "영어유치원", "영어 유치원"]
+}
+
+# 검색 시 사용할 대표 키워드
+SEARCH_QUERIES = [
+    "목동 영유 설명회", "목동 폴리 모집", "목동 라이즈 설명회",
+    "목동 프랜시스파커 입학", "목동 SLP 모집", "목동 영어유치원"
 ]
 
 DB_FILE = "sent_posts.json"
@@ -43,77 +45,76 @@ def save_sent_posts(sent_set):
 
 def send_telegram_msg(text):
     if not TELEGRAM_TOKEN or not CHAT_ID:
-        print("[오류] TELEGRAM_TOKEN 또는 CHAT_ID가 설정되지 않았습니다.")
         return
-    
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     data = urllib.parse.urlencode({
         "chat_id": CHAT_ID,
         "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": False
+        "parse_mode": "HTML"
     }).encode("utf-8")
-    
     context = ssl._create_unverified_context()
-    
     try:
         req = urllib.request.Request(url, data=data)
-        with urllib.request.urlopen(req, context=context) as response:
-            print("텔레그램 전송 성공")
+        urllib.request.urlopen(req, context=context)
     except Exception as e:
         print(f"텔레그램 전송 실패: {e}")
 
-def check_blogs_and_views():
+# [업그레이드 2] 띄어쓰기 및 특수문자 제거 후 유의어 검사 로직
+def is_relevant_post(title, summary):
+    # 텍스트를 소문자로 통일하고 띄어쓰기, 특수문자 완벽 제거
+    text = (title + " " + summary).lower()
+    text_clean = re.sub(r'[^가-힣a-z0-9]', '', text)
+    
+    # '목동'이라는 단어가 텍스트에 존재하는지 1차 확인
+    if "목동" not in text_clean:
+        return False
+        
+    # 영유 이름이 텍스트에 포함되어 있는지 2차 확인
+    for key, aliases in KEYWORD_MAP.items():
+        for alias in aliases:
+            alias_clean = re.sub(r'[^가-힣a-z0-9]', '', alias)
+            if alias_clean in text_clean:
+                # 설명회, 입학, 모집, 원아 등의 목적 단어가 있는지 3차 확인
+                if any(word in text_clean for word in ["설명회", "모집", "입학", "레벨테스트", "입테", "원아"]):
+                    return True
+    return False
+
+def check_smart_blogs():
     sent_posts = load_sent_posts()
     new_sent_posts = set(sent_posts)
-    found_count = 0
+    
+    print("=== [지능형 K-필터 적용] 검색 시작 ===")
 
-    print("=== 목동 영유 통합(블로그+View+카페) 검색 시작 ===")
-
-    for kw in TARGET_KEYWORDS:
-        encoded_kw = urllib.parse.quote(kw)
-        
-        # -------------------------------------------------------------------
-        # [2] 검색 범위 확장: 네이버 뷰/지식iN/통합 검색 RSS 활용
-        # -------------------------------------------------------------------
+    for query in SEARCH_QUERIES:
+        encoded_kw = urllib.parse.quote(query)
         rss_urls = [
-            f"https://search.naver.com/search.naver?where=rss&query={encoded_kw}",       # 통합/블로그 RSS
-            f"https://search.naver.com/search.naver?where=kin_rss&query={encoded_kw}"   # 지식iN/카페/View 영역 RSS
+            f"https://search.naver.com/search.naver?where=rss&query={encoded_kw}",
+            f"https://search.naver.com/search.naver?where=kin_rss&query={encoded_kw}"
         ]
         
         for rss_url in rss_urls:
             try:
-                req = urllib.request.Request(
-                    rss_url, 
-                    headers={'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'}
-                )
+                req = urllib.request.Request(rss_url, headers={'User-Agent': 'Mozilla/5.0'})
                 context = ssl._create_unverified_context()
                 with urllib.request.urlopen(req, context=context, timeout=8) as resp:
                     xml_data = resp.read()
                     root = ET.fromstring(xml_data)
                     
-                    for item in root.findall('.//item')[:3]:  # 키워드당 최신 3개 확인
-                        title = item.find('title').text if item.find('title') is not None else ""
-                        link = item.find('link').text if item.find('link') is not None else ""
+                    for item in root.findall('.//item')[:5]:
+                        title = item.find('title').text or ""
+                        summary = item.find('description').text or ""
+                        link = item.find('link').text or ""
                         
-                        # 특수문자 및 태그 정형화
-                        title_clean = (title.replace('<b>', '')
-                                            .replace('</b>', '')
-                                            .replace('&quot;', '"')
-                                            .replace('&lt;', '<')
-                                            .replace('&gt;', '>'))
-                        
-                        if link and link not in sent_posts:
-                            msg = f"📢 <b>[목동 영유 신규 소식]</b>\n\n<b>키워드:</b> {kw}\n<b>제목:</b> {title_clean}\n\n👉 <a href='{link}'>게시글/공고 바로가기</a>"
+                        # [적용] 지능형 필터 통과 여부 확인
+                        if link not in sent_posts and is_relevant_post(title, summary):
+                            title_clean = title.replace('<b>', '').replace('</b>', '')
+                            msg = f"📢 <b>[목동 영유 스마트 감지]</b>\n\n<b>제목:</b> {title_clean}\n\n👉 <a href='{link}'>게시글 바로가기</a>"
                             send_telegram_msg(msg)
                             new_sent_posts.add(link)
-                            found_count += 1
-            except Exception as e:
-                # 개별 RSS 접근 오류 시 건너뜀
+            except Exception:
                 continue
 
     save_sent_posts(new_sent_posts)
-    print(f"검색 완료: 신규 알림 {found_count}건 전송됨.")
 
 if __name__ == "__main__":
-    check_blogs_and_views()
+    check_smart_blogs()
