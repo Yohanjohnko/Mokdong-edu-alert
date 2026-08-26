@@ -1,28 +1,21 @@
+import os
+import json
+import ssl
+import re
 import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
-import ssl
-import os
-import json
-import re
+from google import genai
+from google.genai import types
 
+# 환경 변수 로드
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# [업그레이드 1] 영문/한글 혼용 및 유의어 매칭 사전 (K-Skill 기반 필터링)
-KEYWORD_MAP = {
-    "폴리": ["폴리", "poly", "엠폴리", "mpoly"],
-    "라이즈": ["라이즈", "rise"],
-    "프랜시스파커": ["프랜시스파커", "프란시스파커", "francis parker"],
-    "SLP": ["slp", "에스엘피"],
-    "월넛": ["월넛", "walnut"],
-    "엘란": ["엘란", "elan"],
-    "PSA": ["psa", "피에스에이"],
-    "ECC": ["ecc", "이씨씨"],
-    "영유": ["영유", "영어유치원", "영어 유치원"]
-}
+# Gemini AI 클라이언트 초기화 (AI 에이전트의 뇌)
+ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# 검색 시 사용할 대표 키워드
 SEARCH_QUERIES = [
     "목동 영유 설명회", "목동 폴리 모집", "목동 라이즈 설명회",
     "목동 프랜시스파커 입학", "목동 SLP 모집", "목동 영어유치원"
@@ -50,7 +43,8 @@ def send_telegram_msg(text):
     data = urllib.parse.urlencode({
         "chat_id": CHAT_ID,
         "text": text,
-        "parse_mode": "HTML"
+        "parse_mode": "HTML",
+        "disable_web_page_preview": False
     }).encode("utf-8")
     context = ssl._create_unverified_context()
     try:
@@ -59,31 +53,47 @@ def send_telegram_msg(text):
     except Exception as e:
         print(f"텔레그램 전송 실패: {e}")
 
-# [업그레이드 2] 띄어쓰기 및 특수문자 제거 후 유의어 검사 로직
-def is_relevant_post(title, summary):
-    # 텍스트를 소문자로 통일하고 띄어쓰기, 특수문자 완벽 제거
-    text = (title + " " + summary).lower()
-    text_clean = re.sub(r'[^가-힣a-z0-9]', '', text)
-    
-    # '목동'이라는 단어가 텍스트에 존재하는지 1차 확인
-    if "목동" not in text_clean:
-        return False
-        
-    # 영유 이름이 텍스트에 포함되어 있는지 2차 확인
-    for key, aliases in KEYWORD_MAP.items():
-        for alias in aliases:
-            alias_clean = re.sub(r'[^가-힣a-z0-9]', '', alias)
-            if alias_clean in text_clean:
-                # 설명회, 입학, 모집, 원아 등의 목적 단어가 있는지 3차 확인
-                if any(word in text_clean for word in ["설명회", "모집", "입학", "레벨테스트", "입테", "원아"]):
-                    return True
-    return False
+# [AI Agent 핵심] Gemini LLM을 통한 문맥 분석 및 필터링/요약
+def analyze_post_with_ai(title, description):
+    if not ai_client:
+        return True, "AI 분석 미설정 (기본 알림)"
 
-def check_smart_blogs():
+    prompt = f"""
+    너는 서울 목동 지역 영어유치원(영유) 입학/설명회 소식을 모니터링하는 전문 AI 에이전트다.
+    다음 게시글의 제목과 요약 내용을 읽고 검토해라.
+
+    [게시글 제목]: {title}
+    [게시글 내용]: {description}
+
+    다음 규칙에 따라 판단하고 반드시 JSON 형식으로만 응답해라:
+    1. is_relevant (boolean): 이 글이 목동 지역 주요 영어유치원(폴리, 라이즈, 프랜시스파커, SLP, 월넛, PSA 등)의 '실제 설명회 일정', '원아 모집 공고', '레벨테스트 안내' 또는 '유용한 학부모 참석/대기 후기'인가?
+       (단순 학원 마케팅, 부동산 글, 무관한 광고글, 단어만 낚시성으로 포함된 글은 false)
+    2. summary (string): is_relevant가 true인 경우, 핵심 정보(대상 연령, 일시, 주요 특징 등)를 2~3줄로 깔끔하게 요약해라. false인 경우 빈 문자열.
+
+    응답 JSON 포맷:
+    {{"is_relevant": true/false, "summary": "요약 내용..."}}
+    """
+
+    try:
+        response = ai_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json"
+            )
+        )
+        res_json = json.loads(response.text)
+        return res_json.get("is_relevant", False), res_json.get("summary", "")
+    except Exception as e:
+        print(f"Gemini AI 분석 실패: {e}")
+        return True, "AI 요약 생성 중 오류 발생"
+
+def run_agent():
     sent_posts = load_sent_posts()
     new_sent_posts = set(sent_posts)
-    
-    print("=== [지능형 K-필터 적용] 검색 시작 ===")
+    found_count = 0
+
+    print("=== [AI Agent] 목동 영유 게시물 수집 및 분석 시작 ===")
 
     for query in SEARCH_QUERIES:
         encoded_kw = urllib.parse.quote(query)
@@ -100,21 +110,34 @@ def check_smart_blogs():
                     xml_data = resp.read()
                     root = ET.fromstring(xml_data)
                     
-                    for item in root.findall('.//item')[:5]:
+                    for item in root.findall('.//item')[:3]:
                         title = item.find('title').text or ""
-                        summary = item.find('description').text or ""
+                        description = item.find('description').text or ""
                         link = item.find('link').text or ""
                         
-                        # [적용] 지능형 필터 통과 여부 확인
-                        if link not in sent_posts and is_relevant_post(title, summary):
-                            title_clean = title.replace('<b>', '').replace('</b>', '')
-                            msg = f"📢 <b>[목동 영유 스마트 감지]</b>\n\n<b>제목:</b> {title_clean}\n\n👉 <a href='{link}'>게시글 바로가기</a>"
-                            send_telegram_msg(msg)
-                            new_sent_posts.add(link)
-            except Exception:
+                        title_clean = title.replace('<b>', '').replace('</b>', '').replace('&quot;', '"')
+                        desc_clean = description.replace('<b>', '').replace('</b>', '')
+
+                        if link and link not in sent_posts:
+                            is_relevant, ai_summary = analyze_post_with_ai(title_clean, desc_clean)
+                            
+                            if is_relevant:
+                                msg = (
+                                    f"🤖 <b>[AI Agent 영유 소식 브리핑]</b>\n\n"
+                                    f"<b>📌 제목:</b> {title_clean}\n\n"
+                                    f"<b>💡 AI 핵심 요약:</b>\n{ai_summary}\n\n"
+                                    f"👉 <a href='{link}'>게시글 바로가기</a>"
+                                )
+                                send_telegram_msg(msg)
+                                new_sent_posts.add(link)
+                                found_count += 1
+                            else:
+                                new_sent_posts.add(link)
+            except Exception as e:
                 continue
 
     save_sent_posts(new_sent_posts)
+    print(f"=== 완료: {found_count}건의 유의미한 소식을 AI가 요약 발송했습니다. ===")
 
 if __name__ == "__main__":
-    check_smart_blogs()
+    run_agent()
