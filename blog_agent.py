@@ -3,7 +3,7 @@ import requests
 import xml.etree.ElementTree as ET
 from google import genai
 
-# 환경 변수 로드 (기존 Secrets 키 자동 사용)
+# 환경 변수 로드
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
@@ -42,12 +42,21 @@ def generate_blog_post(topic_title):
 
 바로 복사해서 블로그에 붙여넣을 수 있도록 깔끔한 마크다운 형식으로 작성해라.
 """
-    # 구글 API 최신 정식 모델(gemini-3.6-flash) 적용
-    response = client.models.generate_content(
-        model='gemini-3.6-flash',
-        contents=prompt
-    )
-    return response.text
+    # 503 트래픽 과부하 방지를 위한 자동 우회 모델 순서
+    candidate_models = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-3.6-flash']
+
+    for model_name in candidate_models:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt
+            )
+            print(f"성공된 모델: {model_name}")
+            return response.text
+        except Exception as e:
+            print(f"[{model_name}] 서버 응답 대기/실패 ({e}). 다음 백업 모델로 재시도합니다.")
+
+    raise Exception("모든 Gemini 백업 모델 응답에 실패했습니다.")
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
