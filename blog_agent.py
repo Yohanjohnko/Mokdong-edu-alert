@@ -63,6 +63,11 @@ def send_telegram(message):
     payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
     requests.post(url, data=payload)
 
+# 텔레그램 전송 예시 코드
+response = requests.post(url, json=payload)
+response.raise_for_status()  # <-- 텔레그램이 거절(400 에러 등)하면 즉시 로그에 진짜 에러 원인을 출력함
+print("블로그 초안 텔레그램 전송 완료!")
+
 if __name__ == "__main__":
     title, link = get_latest_news()
     if title:
