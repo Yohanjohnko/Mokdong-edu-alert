@@ -1,79 +1,57 @@
 import os
 import requests
-import xml.etree.ElementTree as ET
-from google import genai
+import google.generativeai as genai
 
-# 환경 변수 로드
+# 1. 환경변수 검증
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+if not all([GEMINI_API_KEY, TELEGRAM_TOKEN, CHAT_ID]):
+    raise ValueError("필수 환경변수(GEMINI_API_KEY, TELEGRAM_TOKEN, CHAT_ID)가 깃허브 Secrets에 세팅되어 있지 않습니다.")
 
-# 트렌드/정보성 이슈 RSS 수집 (정부 지원금, 환급금, 정책 관련)
-RSS_URL = "https://news.google.com/rss/search?q=%EC%A0%95%EB%B6%80%EC%A0%9C%EB%8F%84+%EC%B2%AD%EC%95%BD+%ED%99%98%EA%B8%89%EA%B8%88&hl=ko&gl=KR&ceid=KR:ko"
+# 2. Gemini API 설정 및 원고 생성
+genai.configure(api_key=GEMINI_API_KEY)
 
-def get_latest_news():
-    try:
-        res = requests.get(RSS_URL)
-        root = ET.fromstring(res.text)
-        items = root.findall('./channel/item')
-        if items:
-            title = items[0].find('title').text
-            link = items[0].find('link').text
-            return title, link
-    except Exception as e:
-        print(f"RSS 수집 오류: {e}")
-    return None, None
+# 최신 모델 우선순위 및 백업 모델 목록
+models_to_try = [
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash"
+]
 
-def generate_blog_post(topic_title):
-    prompt = f"""
-너는 네이버 블로그 검색 상위 노출 전문 카피라이터다.
-다음 최신 주제를 바탕으로 블로그 포스팅 원고 초안을 작성해라.
-
-주제: {topic_title}
-
-[작성 가이드라인]:
-1. 제목: 클릭율이 높은 제목 추천 3개
-2. 서론: 독자의 공감을 이끄는 도입부 (2~3문장)
-3. 본문: 소제목 2~3개로 구별하여 핵심 내용 상세 설명 (가독성 좋게 문단 구분)
-4. 결론: 한 줄 요약 및 댓글 유도 질문
-5. 추천 태그: 연관 해시태그 5개 (#포함)
-
-바로 복사해서 블로그에 붙여넣을 수 있도록 깔끔한 마크다운 형식으로 작성해라.
+prompt = """
+네이버 블로그용 원고 초안을 작성해 줘.
+독자가 읽기 쉽도록 친근한 어조로 작성하고, 특수문자 사용을 최소화해 줘.
 """
-    # 503 트래픽 과부하 방지를 위한 자동 우회 모델 순서
-    candidate_models = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-3.6-flash']
 
-    for model_name in candidate_models:
-        try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt
-            )
+draft_text = None
+
+for model_name in models_to_try:
+    try:
+        print(f"[{model_name}] 모델로 초안 생성 시도 중...")
+        model = genai.GenerativeModel(model_name)
+        response = model.generate_content(prompt)
+        if response and response.text:
+            draft_text = response.text
             print(f"성공된 모델: {model_name}")
-            return response.text
-        except Exception as e:
-            print(f"[{model_name}] 서버 응답 대기/실패 ({e}). 다음 백업 모델로 재시도합니다.")
+            break
+    except Exception as e:
+        print(f"[{model_name}] 서버 응답 대기/실패 ({e}). 다음 백업 모델로 재시도합니다.")
 
-    raise Exception("모든 Gemini 백업 모델 응답에 실패했습니다.")
+if not draft_text:
+        raise RuntimeError("모든 Gemini 모델 호출에 실패했습니다.")
 
-def send_telegram(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
-    requests.post(url, data=payload)
+# 3. 텔레그램 전송 (parse_mode를 제외하여 특수문자 전송 에러 방지)
+url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+payload = {
+    "chat_id": CHAT_ID,
+    "text": draft_text
+}
 
-# 텔레그램 전송 예시 코드
-response = requests.post(url, json=payload)
-response.raise_for_status()  # <-- 텔레그램이 거절(400 에러 등)하면 즉시 로그에 진짜 에러 원인을 출력함
+telegram_response = requests.post(url, json=payload)
+
+# 텔레그램 전송 실패 시(400, 401 등) 깃허브 로그에 에러를 강제로 출력
+telegram_response.raise_for_status()
+
 print("블로그 초안 텔레그램 전송 완료!")
-
-if __name__ == "__main__":
-    title, link = get_latest_news()
-    if title:
-        draft = generate_blog_post(title)
-        msg = f"📝 **[오늘의 블로그 포스팅 초안]**\n\n**출처 뉴스:** {title}\n\n{draft}"
-        send_telegram(msg)
-        print("블로그 초안 텔레그램 전송 완료!")
-    else:
-        print("수집된 뉴스가 없습니다.")
