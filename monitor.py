@@ -22,6 +22,24 @@ SEARCH_QUERIES = [
     "목동 영어유치원",
 ]
 
+# 이미 알림을 보낸 글의 링크를 기록해두는 파일 — 중복 알림 방지용
+SENT_FILE = "sent_links.txt"
+
+
+def load_sent_links():
+    if not os.path.exists(SENT_FILE):
+        return set()
+    with open(SENT_FILE, encoding="utf-8") as f:
+        return set(line.strip() for line in f if line.strip())
+
+
+def save_sent_links(links):
+    if not links:
+        return
+    with open(SENT_FILE, "a", encoding="utf-8") as f:
+        for link in links:
+            f.write(link + "\n")
+
 
 def clean_html(text):
     if not text:
@@ -112,6 +130,8 @@ if __name__ == "__main__":
     print("목동 영유 자동 알림 에이전트 가동 시작... (네이버 블로그/카페 검색 기반)")
     sent_count = 0
     seen_links = set()
+    already_sent = load_sent_links()
+    newly_sent = []
 
     for query in SEARCH_QUERIES:
         candidates = fetch_naver_items(query, "blog") + fetch_naver_items(query, "cafearticle")
@@ -121,6 +141,9 @@ if __name__ == "__main__":
             if not link or link in seen_links:
                 continue
             seen_links.add(link)
+
+            if link in already_sent:
+                continue  # 이미 이전에 알림을 보낸 글이면 건너뜀 (중복 방지)
 
             title = clean_html(item.get("title", ""))
             desc = clean_html(item.get("description", ""))
@@ -132,5 +155,7 @@ if __name__ == "__main__":
                 msg = f"🤖 **[목동 영유 실시간 포착 알림]**\n\n**원문:** [{title}]({link})\n\n💡 **AI 3줄 요약:**\n{ai_summary}"
                 send_telegram(msg)
                 sent_count += 1
+                newly_sent.append(link)
 
+    save_sent_links(newly_sent)
     print(f"모니터링 완료. 텔레그램 알림 전송: {sent_count}건")
