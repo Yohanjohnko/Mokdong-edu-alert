@@ -15,8 +15,8 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 
 # 최신 활성 모델 목록 (존재하지 않는 모델명은 제외)
 models_to_try = [
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
 ]
 
 prompt = """
